@@ -45,6 +45,8 @@
     <texture name="pen_tex" type="2d" file="assets/pen/pen.png"/>
     <material name="pen_mat" texture="pen_tex" specular="0.2" shininess="0.1"/>
     <mesh name="pen" file="assets/pen/pen.obj"/>
+    <material name="pen_cap_mat" rgba="0.025 0.025 0.025 1" specular="0.65" shininess="0.35"/>
+    <mesh name="pen_cap" file="assets/pen/pen_cap.obj"/>
     <texture name="plate_tex" type="2d" file="assets/plate/plate.png"/>
     <material name="plate_mat" texture="plate_tex" specular="0.2" shininess="0.1"/>
     <mesh name="plate" file="assets/plate/plate.obj"/>
@@ -174,6 +176,7 @@
     <body name="pen" pos="-0.1500 -0.2300 0.7520">
       <freejoint name="pen_joint"/>
       <geom name="pen_visual" class="visual" mesh="pen" material="pen_mat" mass="0"/>
+      <geom name="pen_cap_visual" class="visual" mesh="pen_cap" material="pen_cap_mat" mass="0"/>
       <geom name="pen_barrel_collision" class="obj_col" type="cylinder" condim="6" pos="0 0 0.05280000" size="0.01293440 0.05280000" friction="0.8 0.01 0.003" solref="0.01 1" mass="0.02610987"/>
       <geom name="pen_collar_collision" class="obj_col" type="cylinder" condim="6" pos="0 0 0.11520000" size="0.01352000 0.00960000" friction="0.8 0.01 0.003" solref="0.01 1" mass="0.00518684"/>
       <geom name="pen_cap_collision" class="obj_col" type="cylinder" condim="6" pos="0 0 0.14240000" size="0.01293440 0.01760000" friction="0.8 0.01 0.003" solref="0.01 1" mass="0.00870329"/>

@@ -142,9 +142,20 @@ def straighten(mesh, name, max_deg=15):
 def load(name, cfg):
     source = trimesh.load(os.path.join(GLB_DIR, f"{name}.glb"))
     if name == "pen":  # preserve imported smooth normals across texture seams
-        transform, geometry = source.graph[next(iter(source.graph.nodes_geometry))]
-        mesh = source.geometry[geometry]
-        mesh.apply_transform(transform)
+        parts = []
+        for node in source.graph.nodes_geometry:
+            transform, geometry = source.graph[node]
+            part = source.geometry[geometry].copy()
+            part.apply_transform(transform)
+            parts.append(part)
+        vertices, faces = trimesh.util.append_faces(
+            [p.vertices for p in parts], [p.faces for p in parts])
+        material = next(p.visual.material for p in parts
+                        if p.visual.material.baseColorTexture is not None)
+        mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=False,
+                              vertex_normals=np.vstack([p.vertex_normals for p in parts]),
+                              visual=trimesh.visual.TextureVisuals(
+                                  uv=np.vstack([p.visual.uv for p in parts]), material=material))
     else:
         mesh = source.to_geometry()
     # glTF Y-up -> Z-up: (x, y, z) -> (x, -z, y)
@@ -160,10 +171,22 @@ def load(name, cfg):
 
 
 def export(name, mesh):
+    extents = mesh.extents.copy()
     lo, hi = mesh.bounds
     mesh.apply_translation([-(lo[0] + hi[0]) / 2, -(lo[1] + hi[1]) / 2, -lo[2]])
     d = os.path.join(OUT_DIR, "assets", name)
     os.makedirs(d, exist_ok=True)
+    if name == "pen":
+        # Give the cap its own untextured plastic material in MuJoCo.
+        cap_faces = mesh.triangles_center[:, 2] >= mesh.extents[2] * (105 / 160)
+        normals = mesh.vertex_normals.copy()
+        body, cap = mesh.submesh([~cap_faces, cap_faces], repair=False)
+        for part, selected in ((body, ~cap_faces), (cap, cap_faces)):
+            part.vertex_normals = normals[np.unique(mesh.faces[selected])]
+        cap_obj = trimesh.exchange.obj.export_obj(cap, include_texture=False, include_normals=True)
+        with open(os.path.join(d, "pen_cap.obj"), "w") as f:
+            f.write(cap_obj.rstrip() + "\n")
+        mesh = body
     mat = mesh.visual.material
     if hasattr(mat, "to_simple"):
         mesh.visual.material = mat.to_simple()
@@ -173,12 +196,12 @@ def export(name, mesh):
     obj, files = trimesh.exchange.obj.export_obj(
         mesh, include_texture=True, include_normals=True, return_texture=True, mtl_name=f"{name}.mtl")
     with open(os.path.join(d, f"{name}.obj"), "w") as f:
-        f.write(obj)
+        f.write(obj.rstrip() + "\n")
     for fn, data in files.items():
         if fn.endswith(".mtl"):
             with open(os.path.join(d, fn), "wb") as f:
                 f.write(data)
-    print(f"{name:6s} extents={np.round(mesh.extents, 3)}")
+    print(f"{name:6s} extents={np.round(extents, 3)}")
 
 
 def box(name, center, half, rgba="0.6 0.4 0.2 1"):
@@ -204,7 +227,8 @@ def pen_body(pos):
     volumes = [radius ** 2 * (end - start) for _, start, end, radius in segments]
     xml = [f'    <body name="pen" pos="{pos[0]:.4f} {pos[1]:.4f} {pos[2]:.4f}">',
            '      <freejoint name="pen_joint"/>',
-           '      <geom name="pen_visual" class="visual" mesh="pen" material="pen_mat" mass="0"/>']
+           '      <geom name="pen_visual" class="visual" mesh="pen" material="pen_mat" mass="0"/>',
+           '      <geom name="pen_cap_visual" class="visual" mesh="pen_cap" material="pen_cap_mat" mass="0"/>']
     for (name, start, end, radius), volume in zip(segments, volumes):
         center = length * (start + end) / 2
         half = length * (end - start) / 2
@@ -320,6 +344,10 @@ def main():
         assets.append(f'    <texture name="{n}_tex" type="2d" file="assets/{n}/{n}.png"/>')
         assets.append(f'    <material name="{n}_mat" texture="{n}_tex" specular="0.2" shininess="0.1"/>')
         assets.append(f'    <mesh name="{n}" file="assets/{n}/{n}.obj"/>')
+        if n == "pen":
+            assets.append('    <material name="pen_cap_mat" rgba="0.025 0.025 0.025 1" '
+                          'specular="0.65" shininess="0.35"/>')
+            assets.append('    <mesh name="pen_cap" file="assets/pen/pen_cap.obj"/>')
     assets.append(f'    <model name="ur5" file="{os.path.relpath(UR5_XML, OUT_DIR)}"/>')
 
     # --- UR5 on its pedestal (listed first so the arm joints lead qpos)
