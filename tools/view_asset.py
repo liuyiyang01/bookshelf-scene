@@ -52,6 +52,10 @@ def load_asset(name):
     folder = ROOT / "assets" / name
     mesh_path, texture_path = folder / f"{name}.obj", folder / f"{name}.png"
     mesh = trimesh.load(mesh_path, force="mesh", process=False)
+    cap_path = folder / "pen_cap.obj"
+    has_cap = name == "pen" and cap_path.is_file()
+    if has_cap:
+        mesh = trimesh.util.concatenate([mesh, trimesh.load(cap_path, force="mesh", process=False)])
     center = mesh.bounds.mean(axis=0)
     extent = float(max(mesh.extents))
     root = ET.Element("mujoco", model=name)
@@ -59,7 +63,8 @@ def load_asset(name):
     visual = ET.SubElement(root, "visual")
     elevation = -35 if mesh.extents[2] < 0.4 * max(mesh.extents[:2]) else -10
     ET.SubElement(visual, "global", azimuth="60", elevation=str(elevation))
-    ET.SubElement(visual, "headlight", ambient="0.6 0.6 0.6", diffuse="0.5 0.5 0.5", specular="0 0 0")
+    ET.SubElement(visual, "headlight", ambient="0.6 0.6 0.6", diffuse="0.5 0.5 0.5",
+                  specular="0.65 0.65 0.65" if has_cap else "0 0 0")
     assets = ET.SubElement(root, "asset")
     ET.SubElement(assets, "texture", type="skybox", builtin="flat", rgb1="0.88 0.90 0.92",
                   rgb2="0.88 0.90 0.92", width="128", height="128")
@@ -69,6 +74,12 @@ def load_asset(name):
     world = ET.SubElement(root, "worldbody")
     ET.SubElement(world, "geom", name=name, type="mesh", mesh="mesh", material="material",
                   contype="0", conaffinity="0")
+    if has_cap:
+        ET.SubElement(assets, "material", name="cap_material", rgba="0.025 0.025 0.025 1",
+                      specular="0.65", shininess="0.35")
+        ET.SubElement(assets, "mesh", name="cap_mesh", file=str(cap_path))
+        ET.SubElement(world, "geom", name="pen_cap", type="mesh", mesh="cap_mesh",
+                      material="cap_material", contype="0", conaffinity="0", mass="0")
     return mujoco.MjModel.from_xml_string(ET.tostring(root, encoding="unicode"))
 
 
