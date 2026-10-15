@@ -1,4 +1,4 @@
-"""Build the bookshelf MuJoCo scene (table + shelf + books + cups + pen + UR5 with LEAP hand).
+"""Build the bookshelf MuJoCo scene (table + shelf + books + cups + UR5 with LEAP hand) from SAM3D meshes.
 
 SAM3D exports every object normalized to a unit bounding box, glTF Y-up. This script
   1. rotates each mesh to MuJoCo Z-up (glTF +Z "front" -> world -Y),
@@ -46,9 +46,6 @@ ASSETS = {
     "book1": dict(size=None, yaw=90),   # height set from BOOK_HEIGHT_FRACTIONS below
     "book2": dict(size=None, yaw=90),   # height set from BOOK_HEIGHT_FRACTIONS below
     "book3": dict(size=None, yaw=180),   # height set from BOOK_HEIGHT_FRACTIONS below
-    "pen": dict(size=(None, None, 0.16), yaw=0),
-    "plate": dict(size=(0.177, None, None), yaw=0),
-    "desk": dict(size=(0.80, 0.50, 0.19), yaw=0),
 }
 
 # Left-to-right order on the middle board. Each mesh is one physical book series, so same-label
@@ -100,7 +97,6 @@ MIDDLE_BOARD_TOP = -0.04
 
 N_CUPS = 6
 CUP_MASS, BOOK_MASS = 0.05, 0.3
-PEN_MASS = 0.04  # estimated, not measured
 
 PEDESTAL_R = 0.07
 # Standard UR home (upper arm up, forearm level, tool down); pan 0 faces the table (+X).
@@ -140,24 +136,7 @@ def straighten(mesh, name, max_deg=15):
 
 
 def load(name, cfg):
-    source = trimesh.load(os.path.join(GLB_DIR, f"{name}.glb"))
-    if name == "pen":  # preserve imported smooth normals across texture seams
-        parts = []
-        for node in source.graph.nodes_geometry:
-            transform, geometry = source.graph[node]
-            part = source.geometry[geometry].copy()
-            part.apply_transform(transform)
-            parts.append(part)
-        vertices, faces = trimesh.util.append_faces(
-            [p.vertices for p in parts], [p.faces for p in parts])
-        material = next(p.visual.material for p in parts
-                        if p.visual.material.baseColorTexture is not None)
-        mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=False,
-                              vertex_normals=np.vstack([p.vertex_normals for p in parts]),
-                              visual=trimesh.visual.TextureVisuals(
-                                  uv=np.vstack([p.visual.uv for p in parts]), material=material))
-    else:
-        mesh = source.to_geometry()
+    mesh = trimesh.load(os.path.join(GLB_DIR, f"{name}.glb")).to_geometry()
     # glTF Y-up -> Z-up: (x, y, z) -> (x, -z, y)
     mesh.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0]))
     if name.startswith("book"):
@@ -171,22 +150,10 @@ def load(name, cfg):
 
 
 def export(name, mesh):
-    extents = mesh.extents.copy()
     lo, hi = mesh.bounds
     mesh.apply_translation([-(lo[0] + hi[0]) / 2, -(lo[1] + hi[1]) / 2, -lo[2]])
     d = os.path.join(OUT_DIR, "assets", name)
     os.makedirs(d, exist_ok=True)
-    if name == "pen":
-        # Give the cap its own untextured plastic material in MuJoCo.
-        cap_faces = mesh.triangles_center[:, 2] >= mesh.extents[2] * (105 / 160)
-        normals = mesh.vertex_normals.copy()
-        body, cap = mesh.submesh([~cap_faces, cap_faces], repair=False)
-        for part, selected in ((body, ~cap_faces), (cap, cap_faces)):
-            part.vertex_normals = normals[np.unique(mesh.faces[selected])]
-        cap_obj = trimesh.exchange.obj.export_obj(cap, include_texture=False, include_normals=True)
-        with open(os.path.join(d, "pen_cap.obj"), "w") as f:
-            f.write(cap_obj.rstrip() + "\n")
-        mesh = body
     mat = mesh.visual.material
     if hasattr(mat, "to_simple"):
         mesh.visual.material = mat.to_simple()
@@ -196,12 +163,12 @@ def export(name, mesh):
     obj, files = trimesh.exchange.obj.export_obj(
         mesh, include_texture=True, include_normals=True, return_texture=True, mtl_name=f"{name}.mtl")
     with open(os.path.join(d, f"{name}.obj"), "w") as f:
-        f.write(obj.rstrip() + "\n")
+        f.write(obj)
     for fn, data in files.items():
         if fn.endswith(".mtl"):
             with open(os.path.join(d, fn), "wb") as f:
                 f.write(data)
-    print(f"{name:6s} extents={np.round(extents, 3)}")
+    print(f"{name:6s} extents={np.round(mesh.extents, 3)}")
 
 
 def box(name, center, half, rgba="0.6 0.4 0.2 1"):
@@ -216,28 +183,6 @@ def free_body(name, mesh, pos, mass, material=None):
             f'      <geom class="visual" mesh="{mesh}" material="{material or mesh}_mat"/>',
             f'      <geom class="obj_col" mesh="{mesh}" mass="{mass}"/>',
             "    </body>"]
-
-
-def pen_body(pos):
-    """Separate visual mesh and approximate cylinder collisions for the capped pen."""
-    length = ASSETS["pen"]["size"][2]
-    # Name, start/end height fractions, radius/length.
-    segments = [("barrel", 0, .66, .08084), ("collar", .66, .78, .0845),
-                ("cap", .78, 1, .08084)]
-    volumes = [radius ** 2 * (end - start) for _, start, end, radius in segments]
-    xml = [f'    <body name="pen" pos="{pos[0]:.4f} {pos[1]:.4f} {pos[2]:.4f}">',
-           '      <freejoint name="pen_joint"/>',
-           '      <geom name="pen_visual" class="visual" mesh="pen" material="pen_mat" mass="0"/>',
-           '      <geom name="pen_cap_visual" class="visual" mesh="pen_cap" material="pen_cap_mat" mass="0"/>']
-    for (name, start, end, radius), volume in zip(segments, volumes):
-        center = length * (start + end) / 2
-        half = length * (end - start) / 2
-        radius *= length
-        mass = PEN_MASS * volume / sum(volumes)
-        xml.append(f'      <geom name="pen_{name}_collision" class="obj_col" '
-                   f'type="cylinder" condim="6" pos="0 0 {center:.8f}" size="{radius:.8f} {half:.8f}" '
-                   f'friction="0.8 0.01 0.003" solref="0.01 1" mass="{mass:.8f}"/>')
-    return xml + ["    </body>"]
 
 
 def make_ur5_with_hand():
@@ -344,10 +289,6 @@ def main():
         assets.append(f'    <texture name="{n}_tex" type="2d" file="assets/{n}/{n}.png"/>')
         assets.append(f'    <material name="{n}_mat" texture="{n}_tex" specular="0.2" shininess="0.1"/>')
         assets.append(f'    <mesh name="{n}" file="assets/{n}/{n}.obj"/>')
-        if n == "pen":
-            assets.append('    <material name="pen_cap_mat" rgba="0.025 0.025 0.025 1" '
-                          'specular="0.65" shininess="0.35"/>')
-            assets.append('    <mesh name="pen_cap" file="assets/pen/pen_cap.obj"/>')
     assets.append(f'    <model name="ur5" file="{os.path.relpath(UR5_XML, OUT_DIR)}"/>')
 
     # --- UR5 on its pedestal (listed first so the arm joints lead qpos)
@@ -402,9 +343,6 @@ def main():
         wx = meshes[n].extents[0]
         body_xml += free_body(f"book{i:02d}_{n}", n, (x + wx / 2, SHELF_Y, z_mid), BOOK_MASS)
         x += wx + BOOK_GAP
-
-    # --- scanned marker, standing on the open front of the table
-    body_xml += pen_body((-0.15, -0.23, TABLE_H + 0.002))
 
     def scene(keyframe=""):
         return f"""<mujoco model="sam3d_shelf_scene_ur5">
